@@ -145,9 +145,12 @@ class Omni(OmniBase):
 
                 # PD disaggregation: modify stage-0 (prefill) sampling params per request
                 req_sp_list = list(sampling_params_list)
-                pd_pair = self._get_pd_separation_pair()
-                if pd_pair is not None:
-                    p_id = pd_pair[0]
+                # [PD] Multi-replica topologies (1p3d/2p2d/3p1d) need a per-request
+                # prefill pick, so this keeps the list-based accessors instead of
+                # upstream's single-pair _get_pd_separation_pair().
+                bound_prefill_stage_id: int | None = None
+                if self._get_pd_decode_id() is not None and self._get_pd_prefill_ids():
+                    p_id = self._pick_prefill_stage(req_id)
                     req_sp_list[p_id] = self._prepare_prefill_sampling_params(req_id, req_sp_list[p_id])
 
                 self.engine.add_request(
@@ -197,6 +200,7 @@ class Omni(OmniBase):
                     active_reqs.discard(req_id)
                     if pbar is not None:
                         pbar.update(1)
+                    self._release_pd_prefill_for_request(req_id)
                     self._log_summary_and_cleanup(req_id)
         except Exception:
             if "active_reqs" in locals() and active_reqs:
@@ -210,6 +214,8 @@ class Omni(OmniBase):
         request_ids = [request_id] if isinstance(request_id, str) else list(request_id)
         self.engine.abort(request_ids)
         for req_id in request_ids:
+            self._release_pd_prefill_for_request(req_id)
             self.request_states.pop(req_id, None)
         if self.log_stats:
             logger.info("[Omni] Aborted request(s) %s", ",".join(request_ids))
+
