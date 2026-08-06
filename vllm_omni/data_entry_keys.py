@@ -8,6 +8,7 @@ Categories under ``OmniPayload``:
     ids            – token-ID sequences
     codes          – codec / audio code tensors
     meta           – scalar metadata, control flags, shapes
+    pd_sampler     – P/D sampler continuation state
 """
 
 from __future__ import annotations
@@ -57,6 +58,11 @@ class Ids(TypedDict, total=False):
     prior_image: list[int]
 
 
+class PDSampler(TypedDict, total=False):
+    main_generator_state: torch.Tensor
+    seed: int
+
+
 class OmniPayloadMeta(TypedDict, total=False):
     finished: torch.Tensor
     is_segment_finished: torch.Tensor
@@ -99,6 +105,7 @@ class OmniPayload(TypedDict, total=False):
     ids: Ids
     codes: Codes
     meta: OmniPayloadMeta
+    pd_sampler: PDSampler
     latent: torch.Tensor
     generated_len: int
     model_outputs: list[torch.Tensor]
@@ -155,6 +162,11 @@ class IdsStruct(_StructBase):
     prior_image: list[int] | None = None
 
 
+class PDSamplerStruct(_StructBase):
+    main_generator_state: torch.Tensor | None = None
+    seed: int | None = None
+
+
 class MetaStruct(_StructBase):
     finished: torch.Tensor | None = None
     is_segment_finished: torch.Tensor | None = None
@@ -198,6 +210,7 @@ class OmniPayloadStruct(_StructBase):
     ids: IdsStruct | None = None
     codes: CodesStruct | None = None
     meta: MetaStruct | None = None
+    pd_sampler: PDSamplerStruct | None = None
     latent: torch.Tensor | None = None
     generated_len: int | None = None
     model_outputs: list[torch.Tensor] | None = None
@@ -215,6 +228,7 @@ _NESTED_STRUCTS: dict[str, type[_StructBase]] = {
     "ids": IdsStruct,
     "codes": CodesStruct,
     "meta": MetaStruct,
+    "pd_sampler": PDSamplerStruct,
 }
 
 
@@ -299,7 +313,7 @@ def _dtype_to_name(dtype: torch.dtype) -> str:
 
 
 # ── Keys whose values are nested dicts (TypedDict sub-categories) ──
-_NESTED_KEYS = frozenset({"hidden_states", "embed", "ids", "codes", "meta"})
+_NESTED_KEYS = frozenset({"hidden_states", "embed", "ids", "codes", "meta", "pd_sampler"})
 
 
 def flatten_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -412,3 +426,4 @@ def deserialize_payload(
             flat[key] = entry.scalar_data
 
     return unflatten_payload(flat)  # type: ignore[return-value]
+

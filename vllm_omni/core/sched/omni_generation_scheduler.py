@@ -457,6 +457,20 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
         kv_connector_output = model_runner_output.kv_connector_output
 
         cudagraph_stats: CUDAGraphStat | None = model_runner_output.cudagraph_stats
+
+        # [Omni] Mirror upstream Scheduler.update_from_output's deferred-free
+        # drain. Like OmniARScheduler, this method reimplements the upstream
+        # body instead of calling super(), so the drain must be repeated. It is
+        # the only site that advances the processed_step_seq fence and returns
+        # blocks parked by _free_request_blocks() to the pool; without it any
+        # stage running with defer_block_free (max_concurrent_batches > 1 on a
+        # KV consumer) leaks every freed KV block. Inert today because
+        # generation stages carry no kv_transfer_config, but kept in sync so
+        # that enabling one later does not silently reintroduce the leak.
+        if getattr(self, "defer_block_free", False) and scheduler_output.total_num_scheduled_tokens > 0:
+            self.processed_step_seq += 1
+            self._drain_deferred_frees()
+
         perf_stats: PerfStats | None = None
         if self.perf_metrics and self.perf_metrics.is_enabled():
             perf_stats = self.perf_metrics.get_step_perf_stats_per_gpu(scheduler_output)
