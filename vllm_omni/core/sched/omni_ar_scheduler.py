@@ -584,7 +584,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # the process -> monotonically rising KV pressure -> preemption -> a
         # permanently wedged replica, since a preempted PD-consumer request can
         # never be re-admitted.
-        if getattr(self, "defer_block_free", False) and scheduler_output.total_num_scheduled_tokens > 0:
+        if getattr(self, "defer_block_free", False) and getattr(scheduler_output, "total_num_scheduled_tokens", 0) > 0:
             self.processed_step_seq += 1
             self._drain_deferred_frees()
 
@@ -820,7 +820,12 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
-            if req_id in self._pd_prefill_submit_ready_requests:
+            # [PD] getattr-guarded: upstream unit tests drive update_from_output with
+            # a SimpleNamespace scheduler double that never runs __init__, so this
+            # PD-only state may be absent. Same defensive pattern as
+            # getattr(self, "_inflight_prefills", set()) in _free_request().
+            pd_submit_ready = getattr(self, "_pd_prefill_submit_ready_requests", None)
+            if pd_submit_ready is not None and req_id in pd_submit_ready:
                 submit_params = {
                     "pd_submit_ready": True,
                     "transfer_id": f"xfer-{req_id}",
@@ -830,7 +835,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     kv_transfer_params = submit_params
                 else:
                     kv_transfer_params = {**kv_transfer_params, **submit_params}
-                self._pd_prefill_submit_ready_requests.remove(req_id)
+                pd_submit_ready.remove(req_id)
                 logger.info(
                     "[PD_TRACE] qwen3_tts_prefill_submit_ready req=%s has_state=%s",
                     req_id,
@@ -899,10 +904,16 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     )
 
         # [Omni] Cleanup state for finished requests
+        # getattr-guarded: see the note at the pd_submit_ready lookup above --
+        # SimpleNamespace scheduler doubles in upstream tests skip __init__.
+        pd_state_cache = getattr(self, "_kv_ready_multimodal_output_by_req", None)
+        pd_ready_set = getattr(self, "_pd_prefill_submit_ready_requests", None)
         for req in stopped_running_reqs:
             if req.request_id not in self.waiting_for_transfer_free:
-                self._kv_ready_multimodal_output_by_req.pop(req.request_id, None)
-                self._pd_prefill_submit_ready_requests.discard(req.request_id)
+                if pd_state_cache is not None:
+                    pd_state_cache.pop(req.request_id, None)
+                if pd_ready_set is not None:
+                    pd_ready_set.discard(req.request_id)
                 if req.request_id in self.transfer_triggered_requests:
                     self.transfer_triggered_requests.remove(req.request_id)
                 if req.request_id in self.active_kv_transfers:
@@ -912,8 +923,10 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # Same for preempted
         for req in stopped_preempted_reqs:
             if req.request_id not in self.waiting_for_transfer_free:
-                self._kv_ready_multimodal_output_by_req.pop(req.request_id, None)
-                self._pd_prefill_submit_ready_requests.discard(req.request_id)
+                if pd_state_cache is not None:
+                    pd_state_cache.pop(req.request_id, None)
+                if pd_ready_set is not None:
+                    pd_ready_set.discard(req.request_id)
                 if req.request_id in self.transfer_triggered_requests:
                     self.transfer_triggered_requests.remove(req.request_id)
                 if req.request_id in self.active_kv_transfers:

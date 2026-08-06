@@ -467,7 +467,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
         # KV consumer) leaks every freed KV block. Inert today because
         # generation stages carry no kv_transfer_config, but kept in sync so
         # that enabling one later does not silently reintroduce the leak.
-        if getattr(self, "defer_block_free", False) and scheduler_output.total_num_scheduled_tokens > 0:
+        if getattr(self, "defer_block_free", False) and getattr(scheduler_output, "total_num_scheduled_tokens", 0) > 0:
             self.processed_step_seq += 1
             self._drain_deferred_frees()
 
