@@ -584,10 +584,16 @@ class AsyncOmni(EngineClient, OmniBase):
 
             # PD disaggregation: modify prefill-stage sampling params per request
             req_sp_list = list(sampling_params_list)
-            pd_pair = self._get_pd_separation_pair()
-            if pd_pair is not None:
-                p_id = pd_pair[0]
-                req_sp_list[p_id] = self._prepare_prefill_sampling_params(request_id, req_sp_list[p_id])
+            # [PD] Multi-replica topologies need a per-request prefill pick, so keep
+            # the list-based accessors instead of upstream's single-pair helper.
+            bound_prefill_stage_id: int | None = None
+            if self._get_pd_decode_id() is not None and self._get_pd_prefill_ids():
+                p_id = self._pick_prefill_stage(request_id)
+                prefill_sp = self._prepare_prefill_sampling_params(request_id, req_sp_list[p_id])
+                req_sp_list[p_id] = prefill_sp
+                # Reuse the single-step prefill params for the slot-0 (LLM) stage so both stages share one step.
+                req_sp_list[0] = prefill_sp
+                bound_prefill_stage_id = p_id
 
             # Add request(s) to stage 0. For streaming inputs, submit
             # chunks incrementally through streaming_update.
@@ -855,6 +861,7 @@ class AsyncOmni(EngineClient, OmniBase):
 
             # The Orchestrator sets "finished" when the final stage is done
             if result.finished:
+                self._release_pd_prefill_for_request(request_id)
                 break
 
     # ==================== Output Handler ====================
@@ -1066,6 +1073,9 @@ class AsyncOmni(EngineClient, OmniBase):
         """Submit request IDs to be aborted to the engine."""
         await self.engine.abort_async(request_ids)
         for rid in request_ids:
+            # [PD] Decrement the prefill inflight counter so an aborted request
+            # does not permanently occupy a slot in the pick strategy.
+            self._release_pd_prefill_for_request(rid)
             state = self.request_states.pop(rid, None)
             input_stream_task = getattr(state, "input_stream_task", None)
             if input_stream_task is not None and not input_stream_task.done():
@@ -1407,3 +1417,4 @@ class AsyncOmni(EngineClient, OmniBase):
             self.final_output_task.cancel()
             self.final_output_task = None
         OmniBase.shutdown(self)
+
