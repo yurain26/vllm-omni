@@ -139,6 +139,16 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # [Omni][PD] Never admit more decode work than the KV pool can hold.
         self._maybe_cap_running_reqs_for_pd_decode()
 
+    def add_request(self, request: Request) -> None:
+        if os.getenv("VLLM_OMNI_PD_TRACE", "0") not in ("", "0", "false", "False"):
+            _ai = getattr(request, "additional_information", None)
+            _ents = sorted(_ai.entries) if hasattr(_ai, "entries") else (sorted(_ai) if isinstance(_ai, dict) else None)
+            logger.info(
+                "[PD_TRACE] sched_add_request req=%s type=%s ai=%s n_tok=%d",
+                request.request_id, type(request).__name__, _ents, len(request.prompt_token_ids or []),
+            )
+        return super().add_request(request)
+
     def _get_confirmed_num_computed_tokens(self, request: Request) -> int:
         """num_computed_tokens minus async placeholders (KV actually on GPU)."""
         # Output placeholders are zero when async scheduling isn't used
@@ -321,6 +331,11 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 req_id = getattr(nr, "req_id", None)
                 request = self.requests.get(req_id) if req_id else None
                 # Build omni entry preserving all base fields
+                if os.getenv("VLLM_OMNI_PD_TRACE","0") not in ("","0","false","False"):
+                    _ai = getattr(request, "additional_information", None) if request else None
+                    _ents = sorted(_ai.entries) if hasattr(_ai, "entries") else (sorted(_ai) if isinstance(_ai, dict) else None)
+                    logger.info("[PD_TRACE] sched_newreq req=%s ai_type=%s entries=%s",
+                                nr.req_id, type(_ai).__name__, _ents)
                 omni_nr = OmniNewRequestData(
                     req_id=nr.req_id,
                     external_req_id=(getattr(request, "external_req_id", None) if request else None),

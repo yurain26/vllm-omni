@@ -54,6 +54,11 @@ else:
 logger = init_logger(__name__)
 
 
+def _envs_pd_trace() -> bool:
+    """True when VLLM_OMNI_PD_TRACE is set (temporary PD resume diagnostics)."""
+    return os.getenv("VLLM_OMNI_PD_TRACE", "0") not in ("", "0", "false", "False")
+
+
 def _filter_mrope_kwargs_for_model(model: object, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Return only M-RoPE kwargs accepted by the model implementation."""
     method = getattr(model, "get_mrope_input_positions")
@@ -1704,6 +1709,14 @@ class OmniGPUModelRunner(GPUModelRunner):
                 self.inputs_embeds.gpu[start_offset : start_offset + overlay_len].copy_(src)
 
     def _update_additional_information(self, scheduler_output: "SchedulerOutput") -> None:
+        if _envs_pd_trace():
+            _c = getattr(scheduler_output.scheduled_cached_reqs, "additional_information", None)
+            logger.info(
+                "[PD_TRACE] upd_addinfo n_new=%d new_ids=%s cached_ai=%s",
+                len(scheduler_output.scheduled_new_reqs),
+                [getattr(r, "req_id", None) for r in scheduler_output.scheduled_new_reqs],
+                (sorted(_c) if isinstance(_c, dict) else None),
+            )
         for new_req in scheduler_output.scheduled_new_reqs:
             model_buffer = getattr(new_req, "model_intermediate_buffer", None)
             if isinstance(model_buffer, dict) and model_buffer:
@@ -2004,6 +2017,23 @@ class OmniGPUModelRunner(GPUModelRunner):
                     and span_len == 1
                     and num_computed_tokens == prompt_len
                 )
+                if resume_token_id is None and _envs_pd_trace():
+                    logger.info(
+                        "[PD_TRACE] resume_probe req=%s no_token meta_keys=%s infos_keys=%s",
+                        req_id,
+                        sorted(resume_meta) if isinstance(resume_meta, dict) else None,
+                        sorted(req_infos),
+                    )
+                elif not is_pd_resume_token and _envs_pd_trace():
+                    logger.info(
+                        "[PD_TRACE] resume_probe req=%s token=%s consumed=%s span_len=%s computed=%s prompt_len=%s",
+                        req_id,
+                        resume_token_id,
+                        resume_consumed,
+                        span_len,
+                        num_computed_tokens,
+                        prompt_len,
+                    )
                 if is_pd_resume_token:
                     # Keep the remote request at P's exact prompt length so
                     # Mooncake pulls matching blocks. Once that prefix is
