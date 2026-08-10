@@ -139,20 +139,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # [Omni][PD] Never admit more decode work than the KV pool can hold.
         self._maybe_cap_running_reqs_for_pd_decode()
 
-    def add_request(self, request: Request) -> None:
-        if os.getenv("VLLM_OMNI_PD_TRACE", "0") not in ("", "0", "false", "False"):
-            _ai = getattr(request, "additional_information", None)
-            _ents = sorted(_ai.entries) if hasattr(_ai, "entries") else (sorted(_ai) if isinstance(_ai, dict) else None)
-            _sp = getattr(request, "sampling_params", None)
-            _ea = getattr(_sp, "extra_args", None) if _sp is not None else None
-            _kvp = _ea.get("kv_transfer_params") if isinstance(_ea, dict) else None
-            logger.info(
-                "[PD_TRACE] sched_add_request req=%s type=%s ai=%s n_tok=%d kv_params=%s",
-                request.request_id, type(request).__name__, _ents, len(request.prompt_token_ids or []),
-                (_kvp if isinstance(_kvp, dict) else _kvp),
-            )
-        return super().add_request(request)
-
     def _get_confirmed_num_computed_tokens(self, request: Request) -> int:
         """num_computed_tokens minus async placeholders (KV actually on GPU)."""
         # Output placeholders are zero when async scheduling isn't used
@@ -297,16 +283,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # un-schedulable preempted PD-consumer requests). No-op on all other
         # stages and whenever the replica is making progress.
         self._maybe_break_pd_decode_wedge()
-        if os.getenv("VLLM_OMNI_PD_TRACE","0") not in ("","0","false","False") and self._is_pd_decode_consumer_stage():
-            _st = {}
-            for _q in (self.waiting, self.skipped_waiting):
-                for _r in _q:
-                    _st[str(getattr(_r, "status", "?"))] = _st.get(str(getattr(_r, "status", "?")), 0) + 1
-            if _st or self.running:
-                logger.info(
-                    "[PD_TRACE] dec_sched running=%d waiting_states=%s recv_ready=%s",
-                    len(self.running), _st, sorted(getattr(self, "finished_recving_kv_req_ids", set()) or []),
-                )
         if self.chunk_transfer_adapter:
             self.chunk_transfer_adapter.process_pending_chunks(
                 self.waiting, self.running, scheduler_requests=self.requests
@@ -345,11 +321,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 req_id = getattr(nr, "req_id", None)
                 request = self.requests.get(req_id) if req_id else None
                 # Build omni entry preserving all base fields
-                if os.getenv("VLLM_OMNI_PD_TRACE","0") not in ("","0","false","False"):
-                    _ai = getattr(request, "additional_information", None) if request else None
-                    _ents = sorted(_ai.entries) if hasattr(_ai, "entries") else (sorted(_ai) if isinstance(_ai, dict) else None)
-                    logger.info("[PD_TRACE] sched_newreq req=%s ai_type=%s entries=%s",
-                                nr.req_id, type(_ai).__name__, _ents)
                 omni_nr = OmniNewRequestData(
                     req_id=nr.req_id,
                     external_req_id=(getattr(request, "external_req_id", None) if request else None),
